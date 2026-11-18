@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StockPulse · Control de Inventario</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Supabase JS SDK v2 CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#eff6ff',
+              100: '#dbeafe',
+              500: '#3b82f6',
+              600: '#2563eb',
+              700: '#1d4ed8',
+              900: '#1e3a8a',
+            }
+          },
+          animation: {
+            'fade-in':  'fadeIn .35s ease-out both',
+            'slide-up': 'slideUp .4s ease-out both',
+            'pulse-soft': 'pulseSoft 2s ease-in-out infinite',
+          },
+          keyframes: {
+            fadeIn:    { '0%': { opacity: 0 }, '100%': { opacity: 1 } },
+            slideUp:   { '0%': { opacity: 0, transform: 'translateY(16px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } },
+            pulseSoft: { '0%,100%': { opacity: 1 }, '50%': { opacity: 0.6 } },
+          }
+        }
+      }
+    };
+  </script>
+
+  <style>
+    /* Scrollbar personalizado */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+    /* Transición de filas de tabla */
+    tbody tr { transition: background-color .15s ease; }
+
+    /* Efecto de carga del skeleton */
+    .skeleton { background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+    /* Focus ring consistente */
+    input:focus, select:focus { outline: none; box-shadow: 0 0 0 3px rgba(59,130,246,.35); }
+  </style>
+</head>
+
+<body class="bg-slate-100 min-h-screen font-sans text-slate-800 antialiased">
+
+  <!-- ═══════════════════ TOP-NAV ═══════════════════ -->
+  <header class="bg-gradient-to-r from-brand-900 to-brand-700 shadow-lg sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+
+      <!-- Logo + título -->
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+          </svg>
+        </div>
+        <div>
+          <span class="text-white font-bold text-lg leading-none tracking-tight">StockPulse</span>
+          <p class="text-blue-200 text-xs leading-none mt-0.5 hidden sm:block">Control de Inventario · UPTC</p>
+        </div>
+      </div>
+
+      <!-- Indicadores de conexión -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <div id="conn-supabase" class="flex items-center gap-1.5 bg-white/10 rounded-full px-3 py-1 text-xs text-blue-100 font-medium">
+          <span class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse-soft inline-block"></span>
+          <span class="hidden sm:inline">Supabase</span>
+        </div>
+        <div id="conn-n8n" class="flex items-center gap-1.5 bg-white/10 rounded-full px-3 py-1 text-xs text-blue-100 font-medium">
+          <span class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse-soft inline-block"></span>
+          <span class="hidden sm:inline">N8N</span>
+        </div>
+        <button id="btn-refresh" title="Actualizar tabla"
+          class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/25 flex items-center justify-center transition-colors text-white">
+          <svg id="ico-refresh" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ═══════════════════ MAIN ═══════════════════ -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- ── TOAST GLOBAL ── -->
+    <div id="toast-container" class="fixed top-20 right-4 z-50 flex flex-col gap-2 w-full max-w-sm pointer-events-none"></div>
+
+    <!-- ── KPI CARDS ── -->
+    <section class="grid grid-cols-2 sm:grid-cols-4 gap-4 animate-slide-up">
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
+        <p class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Total productos</p>
+        <p id="kpi-total" class="text-3xl font-bold text-slate-800 mt-1">—</p>
+      </div>
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
+        <p class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Stock crítico</p>
+        <p id="kpi-critical" class="text-3xl font-bold text-red-500 mt-1">—</p>
+      </div>
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
+        <p class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Stock óptimo</p>
+        <p id="kpi-optimal" class="text-3xl font-bold text-emerald-500 mt-1">—</p>
+      </div>
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
+        <p class="text-xs text-slate-500 uppercase tracking-wide font-semibold">Bodegas activas</p>
+        <p id="kpi-bodegas" class="text-3xl font-bold text-brand-600 mt-1">—</p>
+      </div>
+    </section>
+
+    <!-- ── GRID: FORM + TABLE ── -->
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+
+      <!-- ══ FORMULARIO ══ -->
+      <aside class="xl:col-span-1">
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden animate-slide-up"
+             style="animation-delay:.08s">
+
+          <div class="bg-gradient-to-r from-brand-600 to-brand-500 px-5 py-4">
+            <h2 class="text-white font-semibold text-sm uppercase tracking-wide flex items-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Registrar / Actualizar producto
+            </h2>
+          </div>
+
+          <!-- Alert de formulario -->
+          <div id="form-alert" class="hidden mx-5 mt-4 px-4 py-3 rounded-xl text-sm font-medium flex items-start gap-2"></div>
+
+          <form id="inv-form" novalidate class="p-5 space-y-4">
+
+            <!-- SKU -->
+            <div>
+              <label for="f-sku" class="block text-xs font-semibold text-slate-600 mb-1 uppercase tracking-wide">SKU *</label>
+              <input id="f-sku" name="sku" type="text" placeholder="Ej: PROD-001"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 transition" />
+              <p id="err-sku" class="hidden text-xs text-red-500 mt-1 flex items-center gap-1">
+                <svg class="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                Campo obligatorio
+              </p>
+            </div>
+
+            <!-- Nombre Producto -->
+            <div>
+              <label for="f-nombre" class="block text-xs font-semibold text-slate-600 mb-1 uppercase tracking-wide">Nombre producto *</label>
+              <input id="f-nombre" name="nombre_producto" type="text" placeholder="Ej: Resma papel A4 500h"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 transition" />
+              <p id="err-nombre" class="hidden text-xs text-red-500 mt-1">Campo obligatorio</p>
+            </div>
+
+            <!-- Bodega -->
+            <div>
+              <label for="f-bodega" class="block text-xs font-semibold text-slate-600 mb-1 uppercase tracking-wide">Bodega *</label>
+              <input id="f-bodega" name="bodega" type="text" placeholder="Ej: Bodega Central"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 transition" />
+              <p id="err-bodega" class="hidden text-xs text-red-500 mt-1">Campo obligatorio</p>
+            </div>
+
+            <!-- Stock actual + mínimo -->
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label for="f-stock-actual" class="block text-xs font-semibold text-slate-600 mb-1 uppercase tracking-wide">Stock actual *</label>
+                <input id="f-stock-actual" name="stock_actual" type="number" min="0" placeholder="0"
+                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 transition" />
+                <p id="err-stock-actual" class="hidden text-xs text-red-500 mt-1">Número ≥ 0</p>
+              </div>
+              <div>
+                <label for="f-stock-min" class="block text-xs font-semibold text-slate-600 mb-1 uppercase tracking-wide">Stock mínimo *</label>
+                <input id="f-stock-min" name="stock_minimo" type="number" min="0" placeholder="0"
+                  class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 transition" />
+                <p id="err-stock-min" class="hidden text-xs text-red-500 mt-1">Número ≥ 0</p>
+              </div>
+            </div>
+
+            <!-- Email proveedor -->
+            <div>
+              <label for="f-email" class="block text-xs font-semibold text-slate-600 mb-1 uppercase tracking-wide">Email proveedor *</label>
+              <input id="f-email" name="proveedor_email" type="email" placeholder="proveedor@ejemplo.com"
+                class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 transition" />
+              <p id="err-email" class="hidden text-xs text-red-500 mt-1">Email inválido</p>
+            </div>
+
+            <!-- Botones acción -->
+            <div class="flex gap-3 pt-1">
+              <button type="submit" id="btn-submit"
+                class="flex-1 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-xl px-4 py-2.5 transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
+                <svg id="ico-submit" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+                <span id="lbl-submit">Guardar</span>
+              </button>
+              <button type="button" id="btn-clear"
+                class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-sm font-semibold rounded-xl px-4 py-2.5 transition-all">
+                Limpiar
+              </button>
+            </div>
+
+            <!-- Indicador de modo edición -->
+            <div id="edit-banner" class="hidden bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs text-amber-700 font-medium flex items-center gap-2">
+              <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+              Editando: <span id="edit-sku" class="font-bold"></span>
+            </div>
+
+          </form>
+        </div>
+      </aside>
+
+      <!-- ══ TABLA INVENTARIO ══ -->
+      <section class="xl:col-span-2 animate-slide-up" style="animation-delay:.16s">
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+
+          <!-- Header tabla -->
+          <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h2 class="text-slate-800 font-semibold text-sm uppercase tracking-wide">Inventario en tiempo real</h2>
+              <p class="text-xs text-slate-400 mt-0.5">Ordenado por última actualización</p>
+            </div>
+            <!-- Buscador -->
+            <div class="relative">
+              <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0" />
+              </svg>
+              <input id="search" type="text" placeholder="Buscar SKU, nombre, bodega…"
+                class="pl-8 pr-3 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-700 w-52 focus:w-64 transition-all placeholder-slate-400" />
+            </div>
+          </div>
+
+          <!-- Wrapper scroll horizontal -->
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm min-w-[640px]">
+              <thead>
+                <tr class="bg-slate-50 border-b border-slate-100 text-xs text-slate-500 uppercase tracking-wide">
+                  <th class="text-left px-4 py-3 font-semibold">SKU</th>
+                  <th class="text-left px-4 py-3 font-semibold">Producto</th>
+                  <th class="text-left px-4 py-3 font-semibold hidden md:table-cell">Bodega</th>
+                  <th class="text-center px-4 py-3 font-semibold">Stock actual</th>
+                  <th class="text-center px-4 py-3 font-semibold hidden sm:table-cell">Mínimo</th>
+                  <th class="text-center px-4 py-3 font-semibold">Estado</th>
+                  <th class="text-center px-4 py-3 font-semibold">Ajuste</th>
+                  <th class="text-center px-4 py-3 font-semibold">Editar</th>
+                </tr>
+              </thead>
+              <tbody id="table-body">
+                <!-- Skeleton inicial -->
+                <tr class="border-b border-slate-50">
+                  <td colspan="8" class="px-4 py-10 text-center text-slate-400 text-sm">
+                    <svg class="w-8 h-8 mx-auto mb-2 text-slate-300 animate-spin" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Cargando inventario…
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Footer tabla -->
+          <div class="px-5 py-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+            <p id="table-count" class="text-xs text-slate-400">— productos</p>
+            <p id="last-updated" class="text-xs text-slate-400">—</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ═══════════════════ SCRIPT PRINCIPAL ═══════════════════ -->
+  <script type="module">
+
+    // ───────────────────────────────────────────────────────────
+    //  CONFIGURACIÓN — editar estas constantes para personalizar
+    // ───────────────────────────────────────────────────────────
+    const SUPABASE_URL     = 'https://lyipddjehqkbhokxkdzz.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_KWvuusfKkPW_PtbajAtMoA_Uu-n7hQP';
+    const N8N_WEBHOOK_URL  = 'https://stockpulse-uptc.app.n8n.cloud/webhook/stockpulse-alerta';
+    const TABLE_NAME       = 'inventario_productos';
+
+    // ───────────────────────────────────────────────────────────
+    //  INICIALIZACIÓN SUPABASE
+    // ───────────────────────────────────────────────────────────
+    const { createClient } = supabase;
+    const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // ───────────────────────────────────────────────────────────
+    //  REFERENCIAS DOM
+    // ───────────────────────────────────────────────────────────
+    const form          = document.getElementById('inv-form');
+    const tableBody     = document.getElementById('table-body');
+    const searchInput   = document.getElementById('search');
+    const btnRefresh    = document.getElementById('btn-refresh');
+    const btnClear      = document.getElementById('btn-clear');
+    const btnSubmit     = document.getElementById('btn-submit');
+    const lblSubmit     = document.getElementById('lbl-submit');
+    const icoSubmit     = document.getElementById('ico-submit');
+    const formAlert     = document.getElementById('form-alert');
+    const editBanner    = document.getElementById('edit-banner');
+    const editSkuSpan   = document.getElementById('edit-sku');
+    const icoRefresh    = document.getElementById('ico-refresh');
+    const toastContainer= document.getElementById('toast-container');
+
+    // KPIs
+    const kpiTotal    = document.getElementById('kpi-total');
+    const kpiCritical = document.getElementById('kpi-critical');
+    const kpiOptimal  = document.getElementById('kpi-optimal');
+    const kpiBodegas  = document.getElementById('kpi-bodegas');
+    const tableCount  = document.getElementById('table-count');
+    const lastUpdated = document.getElementById('last-updated');
+
+    // Conexión badges
+    const connSupabase = document.getElementById('conn-supabase');
+    const connN8n      = document.getElementById('conn-n8n');
+
+    // ───────────────────────────────────────────────────────────
+    //  ESTADO LOCAL
+    // ───────────────────────────────────────────────────────────
+    let allProducts   = [];
+    let editingSkuKey = null;   // null = modo creación; string = modo edición
+
+    // ───────────────────────────────────────────────────────────
+    //  HELPERS: TOAST
+    // ───────────────────────────────────────────────────────────
+    function showToast(message, type = 'success') {
+      const colors = {
+        success: 'bg-emerald-600 text-white',
+        error:   'bg-red-600 text-white',
+        info:    'bg-brand-600 text-white',
+        warning: 'bg-amber-500 text-white',
+      };
+      const icons = {
+        success: '<path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>',
+        error:   '<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>',
+        info:    '<path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>',
+        warning: '<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>',
+      };
+
+      const toast = document.createElement('div');
+      toast.className = `pointer-events-auto flex items-start gap-3 ${colors[type]} rounded-2xl shadow-lg px-4 py-3 text-sm font-medium animate-slide-up max-w-sm`;
+      toast.innerHTML = `
+        <svg class="w-5 h-5 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+          ${icons[type]}
+        </svg>
+        <span class="leading-snug">${message}</span>
+      `;
+      toastContainer.appendChild(toast);
+      setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(-8px)';
+        toast.style.transition = 'all .3s ease';
+        setTimeout(() => toast.remove(), 310);
+      }, 3800);
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  HELPERS: ALERTA DE FORMULARIO
+    // ───────────────────────────────────────────────────────────
+    function showFormAlert(message, type = 'error') {
+      const styles = {
+        error:   'bg-red-50 border border-red-200 text-red-700',
+        success: 'bg-emerald-50 border border-emerald-200 text-emerald-700',
+        info:    'bg-blue-50 border border-blue-200 text-blue-700',
+      };
+      formAlert.className = `mx-5 mt-4 px-4 py-3 rounded-xl text-sm font-medium flex items-start gap-2 ${styles[type]}`;
+      formAlert.innerHTML = `
+        <svg class="w-4 h-4 shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+        </svg>
+        <span>${message}</span>
+      `;
+      formAlert.classList.remove('hidden');
+      setTimeout(() => formAlert.classList.add('hidden'), 5000);
+    }
+
+    function hideFormAlert() { formAlert.classList.add('hidden'); }
+
+    // ───────────────────────────────────────────────────────────
+    //  HELPERS: ESTADO DEL BOTÓN SUBMIT
+    // ───────────────────────────────────────────────────────────
+    function setSubmitLoading(loading) {
+      btnSubmit.disabled = loading;
+      if (loading) {
+        icoSubmit.innerHTML = '';
+        icoSubmit.outerHTML;
+        lblSubmit.textContent = 'Guardando…';
+        btnSubmit.classList.add('opacity-70');
+      } else {
+        icoSubmit.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/>';
+        lblSubmit.textContent = editingSkuKey ? 'Actualizar' : 'Guardar';
+        btnSubmit.classList.remove('opacity-70');
+        btnSubmit.disabled = false;
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  HELPERS: CONEXIÓN BADGES
+    // ───────────────────────────────────────────────────────────
+    function setConnBadge(el, status) {
+      const dot = el.querySelector('span:first-child');
+      dot.className = 'w-2 h-2 rounded-full inline-block ' + (
+        status === 'ok'  ? 'bg-emerald-400' :
+        status === 'err' ? 'bg-red-400 animate-pulse-soft' :
+                           'bg-yellow-400 animate-pulse-soft'
+      );
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  VALIDACIÓN DE FORMULARIO
+    // ───────────────────────────────────────────────────────────
+    function getField(id) { return document.getElementById(id); }
+
+    function validateForm(data) {
+      let valid = true;
+      const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+      const rules = [
+        { id: 'f-sku',         errId: 'err-sku',          test: () => data.sku.trim().length > 0,            msg: 'El SKU es obligatorio.' },
+        { id: 'f-nombre',      errId: 'err-nombre',        test: () => data.nombre_producto.trim().length > 0, msg: 'El nombre del producto es obligatorio.' },
+        { id: 'f-bodega',      errId: 'err-bodega',        test: () => data.bodega.trim().length > 0,          msg: 'La bodega es obligatoria.' },
+        { id: 'f-stock-actual',errId: 'err-stock-actual',  test: () => Number.isInteger(data.stock_actual) && data.stock_actual >= 0, msg: 'Stock actual debe ser un entero ≥ 0.' },
+        { id: 'f-stock-min',   errId: 'err-stock-min',     test: () => Number.isInteger(data.stock_minimo) && data.stock_minimo >= 0,  msg: 'Stock mínimo debe ser un entero ≥ 0.' },
+        { id: 'f-email',       errId: 'err-email',         test: () => emailRe.test(data.proveedor_email),     msg: 'Ingresa un correo electrónico válido.' },
+      ];
+
+      let firstError = null;
+      rules.forEach(({ id, errId, test, msg }) => {
+        const inp = getField(id);
+        const err = getField(errId);
+        if (!test()) {
+          inp.classList.add('border-red-400', 'bg-red-50');
+          inp.classList.remove('border-slate-200', 'bg-slate-50');
+          err.classList.remove('hidden');
+          if (!firstError) firstError = msg;
+          valid = false;
+        } else {
+          inp.classList.remove('border-red-400', 'bg-red-50');
+          inp.classList.add('border-slate-200', 'bg-slate-50');
+          err.classList.add('hidden');
+        }
+      });
+
+      if (!valid) showFormAlert(firstError || 'Por favor corrige los errores marcados.');
+      return valid;
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  LEER DATOS DEL FORMULARIO
+    // ───────────────────────────────────────────────────────────
+    function readFormData() {
+      return {
+        sku:            getField('f-sku').value.trim().toUpperCase(),
+        nombre_producto:getField('f-nombre').value.trim(),
+        bodega:         getField('f-bodega').value.trim(),
+        stock_actual:   parseInt(getField('f-stock-actual').value, 10),
+        stock_minimo:   parseInt(getField('f-stock-min').value, 10),
+        proveedor_email:getField('f-email').value.trim().toLowerCase(),
+      };
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  LIMPIAR FORMULARIO
+    // ───────────────────────────────────────────────────────────
+    function clearForm() {
+      form.reset();
+      ['f-sku','f-nombre','f-bodega','f-stock-actual','f-stock-min','f-email'].forEach(id => {
+        const el = getField(id);
+        el.classList.remove('border-red-400','bg-red-50');
+        el.classList.add('border-slate-200','bg-slate-50');
+      });
+      ['err-sku','err-nombre','err-bodega','err-stock-actual','err-stock-min','err-email'].forEach(id =>
+        getField(id).classList.add('hidden')
+      );
+      editingSkuKey = null;
+      editBanner.classList.add('hidden');
+      lblSubmit.textContent = 'Guardar';
+      hideFormAlert();
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  CARGAR TABLA EN EDICIÓN (CLICK EN FILA)
+    // ───────────────────────────────────────────────────────────
+    function loadRowInForm(product) {
+      clearForm();
+      editingSkuKey = product.sku;
+      getField('f-sku').value           = product.sku;
+      getField('f-sku').readOnly        = true;
+      getField('f-sku').classList.add('bg-slate-100','cursor-not-allowed');
+      getField('f-nombre').value        = product.nombre_producto ?? '';
+      getField('f-bodega').value        = product.bodega ?? '';
+      getField('f-stock-actual').value  = product.stock_actual ?? 0;
+      getField('f-stock-min').value     = product.stock_minimo ?? 0;
+      getField('f-email').value         = product.proveedor_email ?? '';
+      editSkuSpan.textContent           = product.sku;
+      editBanner.classList.remove('hidden');
+      lblSubmit.textContent             = 'Actualizar';
+      // Scroll suave al formulario en mobile
+      form.closest('aside').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  KPIs
+    // ───────────────────────────────────────────────────────────
+    function updateKPIs(products) {
+      const critical = products.filter(p => p.stock_actual <= p.stock_minimo).length;
+      const optimal  = products.filter(p => p.stock_actual  > p.stock_minimo).length;
+      const bodegas  = new Set(products.map(p => p.bodega)).size;
+      kpiTotal.textContent    = products.length;
+      kpiCritical.textContent = critical;
+      kpiOptimal.textContent  = optimal;
+      kpiBodegas.textContent  = bodegas;
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  RENDERIZAR TABLA
+    // ───────────────────────────────────────────────────────────
+    function renderTable(products) {
+      const q = searchInput.value.toLowerCase().trim();
+      const filtered = q
+        ? products.filter(p =>
+            (p.sku             ?? '').toLowerCase().includes(q) ||
+            (p.nombre_producto ?? '').toLowerCase().includes(q) ||
+            (p.bodega          ?? '').toLowerCase().includes(q)
+          )
+        : products;
+
+      tableCount.textContent = `${filtered.length} producto${filtered.length !== 1 ? 's' : ''}`;
+
+      if (filtered.length === 0) {
+        tableBody.innerHTML = `
+          <tr><td colspan="8" class="px-4 py-14 text-center text-slate-400 text-sm">
+            <svg class="w-10 h-10 mx-auto mb-3 text-slate-200" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+            </svg>
+            ${q ? 'No se encontraron resultados para "<strong>' + q + '</strong>"' : 'No hay productos registrados todavía.'}
+          </td></tr>`;
+        return;
+      }
+
+      tableBody.innerHTML = filtered.map(p => {
+        const isCritical = p.stock_actual <= p.stock_minimo;
+        const badge = isCritical
+          ? `<span class="inline-flex items-center gap-1 bg-red-100 text-red-700 text-xs font-bold px-2.5 py-1 rounded-full ring-1 ring-red-200">
+               <span class="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-soft"></span>STOCK CRÍTICO
+             </span>`
+          : `<span class="inline-flex items-center gap-1 bg-emerald-100 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full ring-1 ring-emerald-200">
+               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>ÓPTIMO
+             </span>`;
+
+        const updatedAt = p.ultima_actualizacion
+          ? new Date(p.ultima_actualizacion).toLocaleString('es-CO', { dateStyle:'short', timeStyle:'short' })
+          : '—';
+
+        const rowBg = isCritical ? 'hover:bg-red-50 bg-red-50/40' : 'hover:bg-slate-50';
+
+        return `
+          <tr class="${rowBg} border-b border-slate-100 transition-colors" data-sku="${p.sku}">
+            <td class="px-4 py-3">
+              <span class="font-mono text-xs font-bold text-brand-700 bg-brand-50 px-2 py-1 rounded-lg">${p.sku}</span>
+            </td>
+            <td class="px-4 py-3">
+              <div class="font-medium text-slate-800 text-sm leading-tight">${p.nombre_producto ?? '—'}</div>
+              <div class="text-xs text-slate-400 mt-0.5">${p.proveedor_email ?? ''}</div>
+            </td>
+            <td class="px-4 py-3 hidden md:table-cell">
+              <span class="text-xs text-slate-600 bg-slate-100 px-2 py-1 rounded-lg font-medium">${p.bodega ?? '—'}</span>
+            </td>
+            <td class="px-4 py-3 text-center">
+              <span class="text-lg font-bold ${isCritical ? 'text-red-600' : 'text-slate-800'}">${p.stock_actual ?? 0}</span>
+            </td>
+            <td class="px-4 py-3 text-center hidden sm:table-cell">
+              <span class="text-sm text-slate-500">${p.stock_minimo ?? 0}</span>
+            </td>
+            <td class="px-4 py-3 text-center">${badge}</td>
+            <td class="px-4 py-3 text-center">
+              <div class="inline-flex items-center gap-1.5 bg-slate-100 rounded-xl px-1 py-1">
+                <button class="btn-quick w-7 h-7 rounded-lg bg-white shadow-sm hover:bg-red-50 hover:text-red-600 text-slate-600 text-sm font-bold transition-all flex items-center justify-center"
+                  data-sku="${p.sku}" data-delta="-1" title="Reducir stock en 1">−</button>
+                <button class="btn-quick w-7 h-7 rounded-lg bg-white shadow-sm hover:bg-emerald-50 hover:text-emerald-600 text-slate-600 text-sm font-bold transition-all flex items-center justify-center"
+                  data-sku="${p.sku}" data-delta="1" title="Aumentar stock en 1">+</button>
+              </div>
+            </td>
+            <td class="px-4 py-3 text-center">
+              <button class="btn-edit w-8 h-8 rounded-xl hover:bg-brand-50 hover:text-brand-600 text-slate-400 transition-all flex items-center justify-center mx-auto"
+                data-sku="${p.sku}" title="Editar producto">
+                <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                </svg>
+              </button>
+            </td>
+          </tr>`;
+      }).join('');
+
+      lastUpdated.textContent = `Actualizado: ${new Date().toLocaleTimeString('es-CO')}`;
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  CARGAR INVENTARIO DESDE SUPABASE
+    // ───────────────────────────────────────────────────────────
+    async function loadInventory() {
+      icoRefresh.classList.add('animate-spin');
+      try {
+        const { data, error } = await sb
+          .from(TABLE_NAME)
+          .select('*')
+          .order('ultima_actualizacion', { ascending: false });
+
+        if (error) throw error;
+
+        allProducts = data ?? [];
+        updateKPIs(allProducts);
+        renderTable(allProducts);
+        setConnBadge(connSupabase, 'ok');
+      } catch (err) {
+        console.error('[Supabase] loadInventory error:', err);
+        setConnBadge(connSupabase, 'err');
+        tableBody.innerHTML = `
+          <tr><td colspan="8" class="px-4 py-10 text-center text-red-500 text-sm">
+            <svg class="w-8 h-8 mx-auto mb-2 text-red-300" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            Error al cargar datos: ${err.message}
+          </td></tr>`;
+        showToast('Error al conectar con Supabase: ' + err.message, 'error');
+      } finally {
+        icoRefresh.classList.remove('animate-spin');
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  ENVIAR AL WEBHOOK DE N8N
+    // ───────────────────────────────────────────────────────────
+    async function notifyN8N(productData) {
+      try {
+        const payload = {
+          ...productData,
+          es_critico: productData.stock_actual <= productData.stock_minimo,
+          timestamp:  new Date().toISOString(),
+          fuente:     'StockPulse-Dashboard',
+        };
+
+        const res = await fetch(N8N_WEBHOOK_URL, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(payload),
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setConnBadge(connN8n, 'ok');
+        return true;
+      } catch (err) {
+        console.warn('[N8N] webhook error:', err);
+        setConnBadge(connN8n, 'err');
+        showToast('N8N webhook no respondió: ' + err.message, 'warning');
+        return false;
+      }
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  UPSERT EN SUPABASE
+    // ───────────────────────────────────────────────────────────
+    async function upsertProduct(data) {
+      const { data: result, error } = await sb
+        .from(TABLE_NAME)
+        .upsert(data, { onConflict: 'sku' })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return result;
+    }
+
+    // ───────────────────────────────────────────────────────────
+    //  SUBMIT FORMULARIO
+    // ───────────────────────────────────────────────────────────
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideFormAlert();
+
+      const data = readFormData();
+      if (!validateForm(data)) return;
+
+      setSubmitLoading(true);
+
+      try {
+        const saved = await upsertProduct(data);
+        await notifyN8N(saved ?? data);
+        await loadInventory();
+        clearForm();
+
+        showToast(
+          editingSkuKey
+            ? `Producto ${data.sku} actualizado correctamente.`
+            : `Producto ${data.sku} registrado correctamente.`,
+          'success'
+        );
+      } catch (err) {
+        console.error('[Form] submit error:', err);
+        setConnBadge(connSupabase, 'err');
+        showFormAlert('Error al guardar: ' + (err.message ?? 'Inténtalo de nuevo.'));
+        showToast('Error al guardar en Supabase.', 'error');
+      } finally {
+        setSubmitLoading(false);
+      }
+    });
+
+    // ───────────────────────────────────────────────────────────
+    //  BOTONES RÁPIDOS +1 / -1
+    // ───────────────────────────────────────────────────────────
+    tableBody.addEventListener('click', async (e) => {
+      // Botón de ajuste rápido
+      const quickBtn = e.target.closest('.btn-quick');
+      if (quickBtn) {
+        const sku   = quickBtn.dataset.sku;
+        const delta = parseInt(quickBtn.dataset.delta, 10);
+        const product = allProducts.find(p => p.sku === sku);
+        if (!product) return;
+
+        const newStock = Math.max(0, (product.stock_actual ?? 0) + delta);
+        const updated  = { ...product, stock_actual: newStock };
+
+        // Deshabilitar botones de esa fila temporalmente
+        const row = quickBtn.closest('tr');
+        row.querySelectorAll('.btn-quick').forEach(b => b.disabled = true);
+
+        try {
+          const saved = await upsertProduct(updated);
+          await notifyN8N(saved ?? updated);
+          await loadInventory();
+          showToast(
+            `${product.nombre_producto}: stock ${delta > 0 ? '+1' : '-1'} → ${newStock}`,
+            newStock <= product.stock_minimo ? 'warning' : 'success'
+          );
+        } catch (err) {
+          console.error('[QuickBtn] error:', err);
+          showToast('Error al actualizar stock: ' + err.message, 'error');
+          row.querySelectorAll('.btn-quick').forEach(b => b.disabled = false);
+        }
+        return;
+      }
+
+      // Botón de editar
+      const editBtn = e.target.closest('.btn-edit');
+      if (editBtn) {
+        const sku = editBtn.dataset.sku;
+        const product = allProducts.find(p => p.sku === sku);
+        if (product) loadRowInForm(product);
+      }
+    });
+
+    // ───────────────────────────────────────────────────────────
+    //  BUSCADOR
+    // ───────────────────────────────────────────────────────────
+    searchInput.addEventListener('input', () => renderTable(allProducts));
+
+    // ───────────────────────────────────────────────────────────
+    //  BOTONES AUXILIARES
+    // ───────────────────────────────────────────────────────────
+    btnRefresh.addEventListener('click', loadInventory);
+    btnClear.addEventListener('click', () => {
+      clearForm();
+      getField('f-sku').readOnly = false;
+      getField('f-sku').classList.remove('bg-slate-100','cursor-not-allowed');
+    });
+
+    // ───────────────────────────────────────────────────────────
+    //  TIEMPO REAL — SUPABASE REALTIME
+    // ───────────────────────────────────────────────────────────
+    const channel = sb
+      .channel('inventario-changes')
+      .on('postgres_changes', {
+        event:  '*',
+        schema: 'public',
+        table:  TABLE_NAME,
+      }, (payload) => {
+        console.log('[Realtime]', payload.eventType, payload);
+        loadInventory();
+      })
+      .subscribe((status) => {
+        console.log('[Realtime] status:', status);
+        if (status === 'SUBSCRIBED') setConnBadge(connSupabase, 'ok');
+      });
+
+    // ───────────────────────────────────────────────────────────
+    //  ARRANQUE
+    // ───────────────────────────────────────────────────────────
+    loadInventory();
+
+  </script>
+</body>
+</html>
